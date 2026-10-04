@@ -88,24 +88,82 @@ body {
 		</div>
 
 		<script>
-// Browsers start audio suspended until a gesture: keep every AudioContext the
-// engine makes and resume them on the first tap / click / key.
+// Audio unlock. Browsers keep audio suspended until a gesture, and iOS only
+// lets it start inside one. The engine's AudioContext is made out of reach, so
+// the constructor is wrapped before the engine loads. Each tap / click / key,
+// synchronously in the handler: on iOS set navigator.audioSession to "playback"
+// and play a silent looping <audio> (so the silent switch doesn't mute the
+// game), then resume every context. window.nightsAudioUnlocked turns true once
+// they all run; core/audio.gd polls it and restarts the requested music.
 (function () {
 	const AC = window.AudioContext || window.webkitAudioContext;
 	const ctxs = [];
+	const ua = navigator.userAgent;
+	const IOS = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+	let gestured = false;
+	let tag = null;
+	window.nightsAudioUnlocked = false;
+	window.nightsAudioContexts = ctxs;
+	function update() {
+		const live = ctxs.filter((c) => c.state !== 'closed');
+		if (gestured && live.length > 0 && live.every((c) => c.state === 'running')) { window.nightsAudioUnlocked = true; }
+	}
 	if (AC) {
-		const Wrapped = function (...args) { const c = new AC(...args); ctxs.push(c); return c; };
+		const Wrapped = function (...args) { const c = new AC(...args); ctxs.push(c); c.addEventListener('statechange', update); return c; };
 		Wrapped.prototype = AC.prototype;
 		window.AudioContext = Wrapped;
 		if (window.webkitAudioContext) { window.webkitAudioContext = Wrapped; }
 	}
-	const unlock = () => ctxs.forEach((c) => { if (c.state !== 'running' && c.state !== 'closed') { c.resume(); } });
-	['pointerdown', 'pointerup', 'touchend', 'keydown', 'click'].forEach((e) => document.addEventListener(e, unlock, true));
+	// half a second of 8-bit silence, built here so there's no file to fetch
+	function silentWav() {
+		const rate = 8000, n = 4000, v = new DataView(new ArrayBuffer(44 + n));
+		const str = (o, t) => { for (let i = 0; i < t.length; i++) { v.setUint8(o + i, t.charCodeAt(i)); } };
+		str(0, 'RIFF'); v.setUint32(4, 36 + n, true); str(8, 'WAVE'); str(12, 'fmt ');
+		v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+		v.setUint32(24, rate, true); v.setUint32(28, rate, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true);
+		str(36, 'data'); v.setUint32(40, n, true);
+		for (let i = 0; i < n; i++) { v.setUint8(44 + i, 128); }
+		return URL.createObjectURL(new Blob([v.buffer], { type: 'audio/wav' }));
+	}
+	function playbackSession() {
+		if (!IOS || document.hidden) { return; }
+		try { if (navigator.audioSession) { navigator.audioSession.type = 'playback'; } } catch (e) { /* older iOS */ }
+		if (!tag) {
+			tag = document.createElement('audio');
+			tag.setAttribute('playsinline', '');
+			tag.setAttribute('x-webkit-airplay', 'deny');
+			tag.disableRemotePlayback = true;
+			tag.loop = true;
+			tag.preload = 'auto';
+			tag.src = silentWav();
+		}
+		if (tag.paused) { const p = tag.play(); if (p) { p.catch(() => {}); } }
+	}
+	function unlock(ev) {
+		if (ev && ev.isTrusted === false) { return; }
+		playbackSession();
+		if (ctxs.length > 0) { gestured = true; }
+		ctxs.forEach((c) => {
+			if (c.state !== 'running' && c.state !== 'closed') { const p = c.resume(); if (p) { p.then(update, () => {}); } }
+		});
+		update();
+	}
+	['pointerdown', 'pointerup', 'mousedown', 'touchstart', 'touchend', 'click', 'keydown'].forEach((e) =>
+		window.addEventListener(e, unlock, { capture: true, passive: true }));
+	// the silent loop would show on the lock screen's player: pause it while hidden
+	document.addEventListener('visibilitychange', () => {
+		if (document.hidden) {
+			if (tag && !tag.paused) { tag.pause(); }
+		} else if (gestured) {
+			playbackSession();
+			ctxs.forEach((c) => { if (c.state !== 'running' && c.state !== 'closed') { c.resume().catch(() => {}); } });
+		}
+	});
 }());
 		</script>
 		<script src="index.js"></script>
 		<script>
-const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":true,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":848492,"index.wasm":37686550},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4};
+const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":true,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":849148,"index.wasm":37686550},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4};
 const GODOT_THREADS_ENABLED = false;
 const engine = new Engine(GODOT_CONFIG);
 
